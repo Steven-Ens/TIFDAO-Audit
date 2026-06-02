@@ -1,0 +1,176 @@
+
+Server Security:
+-Auto update security
+
+-SSH
+
+-ownership of files
+
+-Cloudflare usage (turnstile)
+-Tokens generated in functions locally
+
+-aws secret keeper with iam users
+
+-Services all restart properly
+
+-UFW
+
+public/index.html:
+CSP:
+✅ default-src 'self' → Blocks unauthorized external scripts unless explicitly allowed.
+✅ script-src 'self' https://challenges.cloudflare.com → Prevents external scripts except for Cloudflare Turnstile.
+✅ connect-src 'self' https://api.coingecko.com → Allows only CoinGecko API requests (prevents unauthorized external fetches).
+✅ style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com → Prevents unwanted inline styles, except necessary ones.
+✅ font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com → Prevents third-party font injection attacks.
+✅ img-src 'self' data: https://coin-images.coingecko.com → Blocks unauthorized external images, only allowing CoinGecko.
+✅ frame-src 'self' https://challenges.cloudflare.com → Fixes Turnstile iframe issue while blocking other iframes.
+✅ object-src 'none' → Blocks old Flash-based attacks.
+✅ base-uri 'self' → Prevents attackers from hijacking <base> URLs.
+✅ form-action 'self' → Ensures forms only submit to your own site (prevents phishing).
+🚀 What This Means
+
+    Your site now prevents XSS, malicious script injections, and unauthorized resource loading.
+    Turnstile, CoinGecko images, and APIs work without breaking security.
+    Your CSP is strong but flexible enough for your app to function correctly.
+
+✅ 2. Subresource Integrity (SRI) for Font Awesome
+
+<link rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css"
+      integrity="sha384-5e2ESR8Ycmos6g3gAKr1Jvwye8sW4U1u/cAKulfVJnkakCcMqhOudbtPnvJ+nbv7"
+      crossorigin="anonymous">
+
+🔒 Why This is Secure
+
+✅ Ensures that only the expected Font Awesome file loads (prevents malicious modifications).
+✅ If the CDN is compromised, the browser will block the file if its hash doesn’t match.
+✅ Prevents attackers from replacing the file with malicious CSS or JavaScript.
+Prevent Data Leaks with Referrer-Policy
+
+<meta name="referrer" content="strict-origin-when-cross-origin">
+
+🔒 Why This is Secure
+
+✅ Prevents your full URL from being exposed when users click external links.
+✅ Only sends the site’s origin (https://tifdao.com/), not full paths.
+✅ Protects user privacy.
+
+Cloudflare Turnstile (✅ Secure)
+
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" crossorigin="anonymous"></script>
+
+🔒 Why This is Secure
+
+✅ Ensures Cloudflare’s bot protection loads securely.
+✅ No risk of injecting unauthorized scripts.
+5️⃣ Google Fonts Loaded Securely (✅ Secure)
+
+<style>@import url(https://fonts.googleapis.com/css2?family=Poppins:wght@500&display=swap);</style>
+
+🔒 Why This is Secure
+
+✅ Prevents CSP conflicts by loading fonts via CSS import instead of <link>.
+✅ Google Fonts works without issues while maintaining security.
+
+-GENERATE_SOURCEMAP=false for npm run build
+-Code obfuscated with javascript-obfuscator with max obfuscation
+
+Currently Installed npm Packages:
+-
+
+
+Cloudflare Worker:
+-
+
+
+Known Attack Prevention:
+
+Injection Attacks (SQLi, NoSQLi, Command Injection)
+-No database used
+-No execution of shell commands so command injection is not possible
+
+Cross-Site Scripting (XSS)
+-No user input is being stored and rendered dynamically in your front-end.
+-API does not return unescaped user-controlled content that could be injected into the front-end.
+-No includion of third-party scripts dynamically that could be exploited.
+Prevention:
+-Added the following in Nginx config:
+add_header X-XSS-Protection "1; mode=block";
+-NEED TO ADD CSP add_header
+
+Cross-Site Request Forgery (CSRF)
+-API endpoints require a Turnstile token, which an attacker cannot generate from another site.
+-Transactions require wallet signatures, so even if someone tricked a user into clicking something, it wouldn’t authorize a malicious transaction.
+Prevention:
+-Cloudflare's "SameSite" cookie policy also prevents CSRF.
+
+Cross-Origin Resource Sharing (CORS) Misconfiguration
+-CORS is correctly configured— API only accepts requests from your domain.
+-Requests from external domains are blocked (we tested this, and they failed with CORS errors).
+Prevention:
+-Added the following in Nginx config:
+'Access-Control-Allow-Origin': 'https://tifdao.com',
+'Access-Control-Allow-Methods': 'POST',
+'Access-Control-Allow-Headers': 'Content-Type',
+
+Clickjacking
+-Site cannot be embedded in an iframe, which prevents clickjacking attacks.
+Prevention:
+-Added the following to Nginx config:
+add_header X-Frame-Options "DENY";
+
+Server-Side Request Forgery (SSRF)
+-Backend does not make user-controlled requests to internal services or external APIs.
+-Turnstile validation does not call user-supplied URLs.
+Prevention:
+-Cloudflare Worker does NOT allow custom URLs in requests.
+
+Distributed Denial of Service (DDoS)
+-Cloudflare protects your site against large-scale DDoS.
+-Turnstile prevents bots from abusing my API.
+Prevention:
+-Enable Cloudflare “I’m Under Attack Mode” if you ever get targeted.
+
+Man-in-the-Middle (MITM) Attacks
+-Site enforces HTTPS through Cloudflare SSL.
+-Sensitive requests are signed using ECDSA, making data tampering impossible.
+Protection:
+-Added the following in Nginx config:
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload";
+
+Brute-Force & Enumeration Attacks
+-Turnstile prevents automated attacks.
+-No user login system exists, so no password brute-forcing is possible.
+
+Supply Chain Attacks (NPM package vulnerabilities)
+-Updated ethers.js v5.8.0, which removed security vulnerabilities.
+-Need to update other packages
+
+Wallet Security
+-MetaMask must sign all transactions, which prevents unauthorized transactions.
+-Backend never stores private keys.
+
+
+Backend Access Tests: All 4 /api/sign/ endpoints tested
+-curl request with no token generates:
+{"error":"Missing Turnstile token"}* Closing connection 0
+
+-curl request with fake token generates: 
+{"error":"Invalid Turnstile token"}* Closing connection 0
+
+-Browser console call to getTurnstileToken() generates:
+Uncaught ReferenceError: getTurnstileToken is not defined
+
+-Testing fetch requests from other website (hostname) consoles generates:
+Cross-Origin Request Blocked: The Same Origin Policy disallows reading the remote resource at https://tifdao.com/api/sign/getSignedMessageBuyTif. (Reason: CORS request did not succeed). Status code: (null).
+Uncaught (in promise) TypeError: NetworkError when attempting to fetch resource.
+
+
+-Future Fixes:
+-If a user starts a transaction but cancels it they can sniff out the token and use it in a malicious transaction
+-Need to hash the user data and/or generate a nonce 
+
+-Add back in CSP protection in Nginx config
+
+-Run: npm audit --production
+-Update npm packages

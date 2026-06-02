@@ -1,0 +1,449 @@
+Token.sol Security Audit:
+
+***Audit Summary***
+    -This audit assessed Token.sol and its modifications to inherited OpenZeppelin contract functions.
+    -Modifications to mint() work as specified, shown within the tests from 'Function Testing' below.
+    -The code does not include any known vulnerabilities from https://scsfg.io/hackers/.
+    -No vulnerabilities were found in Mythril to the functions I modified.
+    -After review, no security vulnerabilities were found in Token.sol.
+
+Audit Coverage:
+    -Code Analysis
+    -Known Vulnerabilities
+    -Function Testing
+    -Solhint 
+    -Mythril
+
+
+
+***Code Analysis***
+
+Does the contract use the correct compiler version?: 
+    Yes, ^0.8.27 is used allowing for bugfix releases until version 0.9.0.
+
+Are files imported and inherited correctly?: 
+    Yes, all imports are from OpenZeppelin version 4.9.6 and are imported and inherited correctly.
+
+
+
+Function: constuctor()
+
+Does the function have the correct visibility?
+    Yes, as there is no function visibilty for constructors in the Solidity version used.
+
+Does this function have the correct access control?
+    Yes, as there is no access control for constructors. 
+
+What does this function do? 
+    Besides providing the required function arguments to the parent constructors, the _grantRole() function is called
+    setting the DEFAULT_ADMIN_ROLE as the contract deployer via OpenZeppelin's AccessControl.sol module. This role is
+    revoked at the end of scripts/deploy.js in the line:
+    await deployedTokenContract.revokeRole(defaultAdminRole, deployer.address);
+
+
+
+Unused function setMainAddress() was removed in this audit as it's no longer used.
+
+
+
+Function: mint(address to, uint256 amount) external onlyRole(MINTER_ROLE)
+
+Does the function have the correct visibility?
+    Yes, it maintains the public visibility from the function it overrides as required. It's only called externally by
+    Main.sol via _mintUserContribution() in the line: 
+    _tifInstance.mint(msg.sender, mintInfo.tifToMint);
+
+Does the function have the correct access control?
+    Yes, onlyRole(MINTER_ROLE) can call this function, and the role is given to Main.sol and only to Main.sol in
+    the deployment script scripts/deploy.js via the line: 
+    await deployedTokenContract.grantRole(minterRoleHash, main.address);
+
+What does this function do?
+    This function calls _mint() declared within the Token.sol file in an override of ERC20.sol by ERC20Votes.sol. The
+    ERC20Votes.sol _mint() function then calls _mint() from ERC20.sol before executing its own code afterwards.
+
+
+
+The last three functions are overrides required by Solidity, overriding internal ERC20.sol functions with
+ERC20Votes.sol functions. I did not modify anything within them. This override allows for balance checkpoints and
+voting power based on the amount of TIFDAO Tokens held by the user, to be used in the governance feature.
+
+
+
+***Known Vulnerabilities: (https://scsfg.io/hackers/)***
+
+ABI Hash Collisions:
+    -Token.sol does not utilize abi.encodePacked(). 
+
+Ambiguous Evaluation Order: 
+    -Both Token.sol and all imported OpenZeppelin contracts utilize Solidity version ^0.8.x. which enforces explicit
+    evaluation order
+    -Token.sol does not utilize any complex expressions with multiple state-changing operations. 
+
+Approval Vulnerabilities: 
+    -OpenZeppelin v4 uses the functions increaseAllowance() and decreaseAllowance(). This limits a threat agent from
+    using both the old and new allowance when an allowance is changed, by taking advantage of unfortunate transaction
+    ordering. These functions were removed in OpenZeppelin v5 for reasons mentioned here: 
+    https://github.com/OpenZeppelin/openzeppelin-contracts/issues/4583.
+    -No unlimited approvals exist, the front-end only approves what is required for a single transaction.
+
+Exposed Data:
+    -No sensitive data is used or stored on chain by any function in Token.sol, including private keys, signatures, or
+    user data.
+
+Frontrunning:
+    -There is no relevance of transaction ordering or timing in any functions used in Token.sol. Minting is also
+    restricted to the Main.sol contract address only. 
+
+Griefing Attacks:
+    -Griefing is not an issue with mint() as it has no timed elements and is limited to calls only by the Main.sol
+    contract address.
+    -call() is not used and therefore gas griefing attacks from not checking the success of the return value is not an
+    issue.
+
+Incorrect Parameter Order:
+    -All function parameters are clearly defined and used in the expected order.
+
+Oracle Manipulation Attacks:
+    -Token.sol does not rely on external oracles for price feeds or any other external data.
+
+Reentrancy Attacks;
+    -Token.sol does not call external contracts and follows OpenZeppelin’s token implementation, which does not involve
+    reentrancy risks.
+    -call() and delegatecall() are not used, and no untrusted external contract interactions exist.
+
+Signature-related Attacks:
+    -The contract does not verify off-chain signatures or use ecrecover(), eliminating this risk.
+
+Unexpected Ether Transfers:
+    -Token.sol cannot receive Ether by normal means as receive() and payable functions are absent.
+    -Any Ether maliciously sent would be locked, and no functions depend on Ether balances.
+
+Unprotected Swaps:
+    -Token.sol does not handle token swaps, automated market making (AMM), or liquidity pools so there is no need for
+    slippage protection.
+
+Address Validation:
+    -OpenZeppelin has checks in ERC20.sol in _mint(), _burn() and _approve() to ensure the account entered is not
+    address(0). Other functions can have address(0) as input without affecting the contract itself, such as checking
+    information on address(0) or delegating to address(0) which effectively removes voting capability of a user by said
+    user. 
+
+
+
+***Function Testing***
+-Tests found in tests/Token.js and all 25 tests pass as expected
+
+-All of the values passed in the constructor are tested. The values set for ERC20.sol are shown here: 
+    it("Should succeed in calling name()", async function () {
+        expect(await deployment.userOneToken.name()).to.equal("Token Index Fund DAO");
+    })
+
+    it("Should succeed in calling symbol()", async function () {
+        expect(await deployment.userOneToken.symbol()).to.equal("TIFDAO");
+    })
+
+-This test ensures that calls from users without the MINTER_ROLE fail:
+    it("Should fail in userOne calling mint()", async function () {  
+        await expect(deployment.userOneToken.mint(deployment.userOne.address, 1)).to.be.revertedWith(
+            "AccessControl: account 0x70997970c51812dc3a010c7d01b50e0d17dc79c8 is missing role 0x9f2df0fed2c77648de5860a4cc508cd0818c85b8b8a1ab4ceeef8d981c8956a6"
+        );
+    });
+
+-This test shows that sending Ether through normal means to the contract is blocked:
+    it("Should fail in userOne sending 1 ETH to Token.sol", async function () {
+        await expect(deployment.userOne.sendTransaction(
+            { to: deployment.token.address, value: ethers.utils.parseEther("1") }
+        )).to.be.revertedWithoutReason();
+
+        expect(await ethers.provider.getBalance(deployment.token.address)).to.equal(0);
+    });
+
+-This test shows that the deployer does not have the DEFAULT_ADMIN_ROLE after contract deployment, and can no longer
+assign roles:
+    it("Should succeed in deployer calling hasRole()", async function () {
+        expect(await deployment.deployerToken.hasRole(DEFAULT_ADMIN_ROLE, deployment.deployer.address)).to.equal(false);
+    });
+
+    it("Should fail in deployer calling grantRole()", async function () {
+        await expect(deployment.deployerToken.grantRole(DEFAULT_ADMIN_ROLE, deployment.deployer.address)).to.be.revertedWith(
+            "AccessControl: account 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266 is missing role 0x0000000000000000000000000000000000000000000000000000000000000000"
+        );
+    });
+
+
+
+***Solhint***
+Summary: The OpenZeppelin Wizard (v4 and v5) both still use this method of import and I want to maintain consistency across my code.
+
+Default: No issues detected
+
+Recommended: 
+contracts/Token.sol
+  11:1  warning  global import of path @openzeppelin/contracts/token/ERC20/ERC20.sol is not allowed. Specify names to import individually or bind all exports of the module into a name (import "path" as Name)                     no-global-import
+  12:1  warning  global import of path @openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol is not allowed. Specify names to import individually or bind all exports of the module into a name (import "path" as Name)  no-global-import
+  13:1  warning  global import of path @openzeppelin/contracts/access/AccessControl.sol is not allowed. Specify names to import individually or bind all exports of the module into a name (import "path" as Name)                  no-global-import
+  14:1  warning  global import of path @openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol is not allowed. Specify names to import individually or bind all exports of the module into a name (import "path" as Name)    no-global-import
+  15:1  warning  global import of path @openzeppelin/contracts/token/ERC20/extensions/ERC20Votes.sol is not allowed. Specify names to import individually or bind all exports of the module into a name (import "path" as Name)     no-global-import
+
+✖ 5 problems (0 errors, 5 warnings)
+
+
+
+***Mythril Analysis***
+Summary: No vulnerabilities were found in any of the functions I modified. The flagged issues are within OpenZeppelin's
+library functions, which have already been extensively audited and are not safe to modify. Therefore, no further
+changes are necessary.
+
+Mythril Analysis Output:
+==== Integer Arithmetic Bugs ====
+SWC ID: 101
+Severity: High
+Contract: Token
+Function name: constructor
+PC address: 1271
+Estimated Gas Usage: 27274 - 97646
+The arithmetic operator can underflow.
+It is possible to cause an integer overflow or underflow in the arithmetic operation. 
+--------------------
+In file: #utility.yul:25
+
+idator_revert_t_bytes4(value)
+    }
+
+ 
+
+--------------------
+Initial State:
+
+Account: [CREATOR], balance: 0x0, nonce:0, storage:{}
+Account: [ATTACKER], balance: 0x0, nonce:0, storage:{}
+
+Transaction Sequence:
+
+Caller: [CREATOR], calldata: , decoded_data: , value: 0x0
+
+==== Dependence on predictable environment variable ====
+SWC ID: 120
+Severity: Low
+Contract: Token
+Function name: getPastVotes(address,uint256)
+PC address: 2578
+Estimated Gas Usage: 835 - 930
+A control flow decision is made based on The block.number environment variable.
+The block.number environment variable is used to determine a control flow decision. Note that the values of variables like coinbase, gaslimit, block number and timestamp are predictable and can be manipulated by a malicious miner. Also keep in mind that attackers know hashes of earlier blocks. Don't use any of those environment variables as sources of randomness and be aware that use of these variables introduces a certain level of trust into miners.
+--------------------
+In file: flattened/flattened_Token.sol:3662
+
+require(timepoint < clock(), "ERC20Votes: future lookup")
+
+--------------------
+Initial State:
+
+Account: [CREATOR], balance: 0x0, nonce:0, storage:{}
+Account: [ATTACKER], balance: 0x0, nonce:0, storage:{}
+
+Transaction Sequence:
+
+Caller: [CREATOR], calldata: , decoded_data: , value: 0x0
+Caller: [CREATOR], function: getPastVotes(address,uint256), txdata: 0x3a46b1a80000000000000000000000000000000000000000000000000000000000000000000000000000000000000000affeaffeaffeaffeaffeaffeaffeaffeaffeafff, decoded_data: ('0x0000000000000000000000000000000000000000', 1004753105490295263244812946565948198177742958591), value: 0x0
+
+==== Dependence on predictable environment variable ====
+SWC ID: 120
+Severity: Low
+Contract: Token
+Function name: CLOCK_MODE()
+PC address: 2818
+Estimated Gas Usage: 331 - 426
+A control flow decision is made based on The block.number environment variable.
+The block.number environment variable is used to determine a control flow decision. Note that the values of variables like coinbase, gaslimit, block number and timestamp are predictable and can be manipulated by a malicious miner. Also keep in mind that attackers know hashes of earlier blocks. Don't use any of those environment variables as sources of randomness and be aware that use of these variables introduces a certain level of trust into miners.
+--------------------
+In file: flattened/flattened_Token.sol:3619
+
+require(clock() == block.number, "ERC20Votes: broken clock mode")
+
+--------------------
+Initial State:
+
+Account: [CREATOR], balance: 0x0, nonce:0, storage:{}
+Account: [ATTACKER], balance: 0x0, nonce:0, storage:{}
+
+Transaction Sequence:
+
+Caller: [CREATOR], calldata: , decoded_data: , value: 0x0
+Caller: [CREATOR], function: CLOCK_MODE(), txdata: 0x4bf5d7e9, value: 0x0
+
+==== Dependence on predictable environment variable ====
+SWC ID: 120
+Severity: Low
+Contract: Token
+Function name: getPastTotalSupply(uint256)
+PC address: 3611
+Estimated Gas Usage: 570 - 665
+A control flow decision is made based on The block.number environment variable.
+The block.number environment variable is used to determine a control flow decision. Note that the values of variables like coinbase, gaslimit, block number and timestamp are predictable and can be manipulated by a malicious miner. Also keep in mind that attackers know hashes of earlier blocks. Don't use any of those environment variables as sources of randomness and be aware that use of these variables introduces a certain level of trust into miners.
+--------------------
+In file: flattened/flattened_Token.sol:3675
+
+require(timepoint < clock(), "ERC20Votes: future lookup")
+
+--------------------
+Initial State:
+
+Account: [CREATOR], balance: 0x0, nonce:0, storage:{}
+Account: [ATTACKER], balance: 0x0, nonce:0, storage:{}
+
+Transaction Sequence:
+
+Caller: [CREATOR], calldata: , decoded_data: , value: 0x0
+Caller: [SOMEGUY], function: getPastTotalSupply(uint256), txdata: 0x8e539e8c0101010101010101010101010000000000000000000000000000000000000000, decoded_data: (454086624460063511464984254930299632219368948029164232183299219561792929792,), value: 0x0
+
+==== Dependence on predictable environment variable ====
+SWC ID: 116
+Severity: Low
+Contract: Token
+Function name: delegateBySig(address,uint256,uint256,uint8,bytes32,bytes32)
+PC address: 4390
+Estimated Gas Usage: 1427 - 1522
+A control flow decision is made based on The block.timestamp environment variable.
+The block.timestamp environment variable is used to determine a control flow decision. Note that the values of variables like coinbase, gaslimit, block number and timestamp are predictable and can be manipulated by a malicious miner. Also keep in mind that attackers know hashes of earlier blocks. Don't use any of those environment variables as sources of randomness and be aware that use of these variables introduces a certain level of trust into miners.
+--------------------
+In file: flattened/flattened_Token.sol:3741
+
+require(block.timestamp <= expiry, "ERC20Votes: signature expired")
+
+--------------------
+Initial State:
+
+Account: [CREATOR], balance: 0x0, nonce:0, storage:{}
+Account: [ATTACKER], balance: 0x0, nonce:0, storage:{}
+
+Transaction Sequence:
+
+Caller: [CREATOR], calldata: , decoded_data: , value: 0x0
+Caller: [SOMEGUY], function: delegateBySig(address,uint256,uint256,uint8,bytes32,bytes32), txdata: 0xc3cda520000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000, decoded_data: ('0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 0, 0, 0, '0000000000000000000000000000000000000000000000000000000000000000', '0000000000000000000000000000000000000000000000000000000000000000'), value: 0x0
+
+==== Dependence on predictable environment variable ====
+SWC ID: 116
+Severity: Low
+Contract: Token
+Function name: permit(address,address,uint256,uint256,uint8,bytes32,bytes32)
+PC address: 4650
+Estimated Gas Usage: 1583 - 1678
+A control flow decision is made based on The block.timestamp environment variable.
+The block.timestamp environment variable is used to determine a control flow decision. Note that the values of variables like coinbase, gaslimit, block number and timestamp are predictable and can be manipulated by a malicious miner. Also keep in mind that attackers know hashes of earlier blocks. Don't use any of those environment variables as sources of randomness and be aware that use of these variables introduces a certain level of trust into miners.
+--------------------
+In file: flattened/flattened_Token.sol:2387
+
+require(block.timestamp <= deadline, "ERC20Permit: expired deadline")
+
+--------------------
+Initial State:
+
+Account: [CREATOR], balance: 0x0, nonce:0, storage:{}
+Account: [ATTACKER], balance: 0x0, nonce:0, storage:{}
+
+Transaction Sequence:
+
+Caller: [CREATOR], calldata: , decoded_data: , value: 0x0
+Caller: [ATTACKER], function: permit(address,address,uint256,uint256,uint8,bytes32,bytes32), txdata: 0xd505accf0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000, decoded_data: ('0x0000000000000000000000000000000000000000', '0x0000000000000000000000000000000000020000', 0, 0, 0, '0000000000000000000000000000000000000000000000000000000000000000', '0000000000000000000000000000000000000000000000000000000000000000'), value: 0x0
+
+==== Dependence on predictable environment variable ====
+SWC ID: 120
+Severity: Low
+Contract: Token
+Function name: burn(uint256)
+PC address: 8089
+Estimated Gas Usage: 17803 - 60514
+A control flow decision is made based on The block.number environment variable.
+The block.number environment variable is used to determine a control flow decision. Note that the values of variables like coinbase, gaslimit, block number and timestamp are predictable and can be manipulated by a malicious miner. Also keep in mind that attackers know hashes of earlier blocks. Don't use any of those environment variables as sources of randomness and be aware that use of these variables introduces a certain level of trust into miners.
+--------------------
+In file: flattened/flattened_Token.sol:2923
+
+require(value <= type(uint32).max, "SafeCast: value doesn't fit in 32 bits")
+
+--------------------
+Initial State:
+
+Account: [CREATOR], balance: 0x0, nonce:0, storage:{}
+Account: [ATTACKER], balance: 0x0, nonce:0, storage:{}
+
+Transaction Sequence:
+
+Caller: [CREATOR], calldata: , decoded_data: , value: 0x0
+Caller: [CREATOR], function: burn(uint256), txdata: 0x42966c680000000000000000000000000000000000000000000000000000000000000000, decoded_data: (0,), value: 0x0
+
+==== Dependence on predictable environment variable ====
+SWC ID: 120
+Severity: Low
+Contract: Token
+Function name: clock()
+PC address: 8364
+Estimated Gas Usage: 268 - 363
+A control flow decision is made based on The block.number environment variable.
+The block.number environment variable is used to determine a control flow decision. Note that the values of variables like coinbase, gaslimit, block number and timestamp are predictable and can be manipulated by a malicious miner. Also keep in mind that attackers know hashes of earlier blocks. Don't use any of those environment variables as sources of randomness and be aware that use of these variables introduces a certain level of trust into miners.
+--------------------
+In file: flattened/flattened_Token.sol:2889
+
+require(value <= type(uint48).max, "SafeCast: value doesn't fit in 48 bits")
+
+--------------------
+Initial State:
+
+Account: [CREATOR], balance: 0x0, nonce:0, storage:{}
+Account: [ATTACKER], balance: 0x0, nonce:0, storage:{}
+
+Transaction Sequence:
+
+Caller: [CREATOR], calldata: , decoded_data: , value: 0x0
+Caller: [SOMEGUY], function: clock(), txdata: 0x91ddadf4, value: 0x0
+
+==== Integer Arithmetic Bugs ====
+SWC ID: 101
+Severity: High
+Contract: Token
+Function name: name()
+PC address: 15785
+Estimated Gas Usage: 3600 - 4825
+The arithmetic operator can underflow.
+It is possible to cause an integer overflow or underflow in the arithmetic operation. 
+--------------------
+In file: #utility.yul:600
+
+eq(outOfPlaceEncoding, lt(length, 32))
+
+--------------------
+Initial State:
+
+Account: [CREATOR], balance: 0x0, nonce:0, storage:{}
+Account: [ATTACKER], balance: 0x0, nonce:0, storage:{}
+
+Transaction Sequence:
+
+Caller: [CREATOR], calldata: , decoded_data: , value: 0x0
+Caller: [ATTACKER], function: name(), txdata: 0x06fdde03, value: 0x0
+
+==== Integer Arithmetic Bugs ====
+SWC ID: 101
+Severity: High
+Contract: Token
+Function name: symbol()
+PC address: 15785
+Estimated Gas Usage: 3642 - 4867
+The arithmetic operator can underflow.
+It is possible to cause an integer overflow or underflow in the arithmetic operation. 
+--------------------
+In file: #utility.yul:600
+
+eq(outOfPlaceEncoding, lt(length, 32))
+
+--------------------
+Initial State:
+
+Account: [CREATOR], balance: 0x0, nonce:0, storage:{}
+Account: [ATTACKER], balance: 0x0, nonce:0, storage:{}
+
+Transaction Sequence:
+
+Caller: [CREATOR], calldata: , decoded_data: , value: 0x0
+Caller: [CREATOR], function: symbol(), txdata: 0x95d89b41, value: 0x0

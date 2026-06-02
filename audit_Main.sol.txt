@@ -1,0 +1,1168 @@
+Main.sol Security Audit:
+
+***Audit Summary***
+    -This audit assesses the Main.sol contract functions, focusing on potential risks and mitigations.
+
+    Audit Coverage:
+    -Liquidity Pool Manipulation
+    -Gas Cost of Looping
+    -Code Analysis
+    -Known Vulnerabilities
+    -Solhint 
+    -Mythril
+
+    Key Findings:
+    -No vulnerabilities were found that allow an attacker to steal funds from the TIFDAO Fund.
+    -Some potential denial-of-service (DoS) risks exist but do not result in financial gain for attackers.
+
+
+
+    1. Liquidity Pool Manipulation:
+    Impact: Potential temporary disruption of sellTif() transactions.
+    Risk: Minor
+
+    Issue:
+    -sellTif() relies on calculating the maxValuedToken dynamically. Since up to 100 tokens are included in the TIFDAO
+    Index, it is not feasible to calculate all values on-chain efficiently.
+    -If an attacker manipulates the liquidity pool, the calculated maxValuedToken's minTokenOutput for the swap may
+    become inaccurate, causing transactions to fail.
+
+    Mitigation: 
+    -Liquidity self-corrects as arbitrageurs are incentivized to restore prices, ensuring sellTif() remains functional.
+    -No direct financial gain exists for an attacker; the impact is only temporary.
+
+
+
+    2. Gas Costs for _index Loops:
+    Impact: Gas cost considerations for addTokenToIndex(), removeTokenFromIndex(), and sellRemovedToken().
+    Risk: Minimal
+
+    -The hard cap of 100 tokens ensures that even in the worst-case scenario, the loop costs ~220,000 gas, which is
+    well below the 15M block gas limit.
+    -Even under higher gas price conditions, the cost remains reasonable.
+
+
+
+    3. Governance Risk: Malicious Token Addition
+    Impact: Potential governance attack via voting in a paused token.
+    Risk: Moderate, but no financial gain for attacker
+
+    Issue:
+    -Tokens that support pausing but do not implement paused() can bypass the current contract check.
+    -If such a token is added to _index via DAO vote and later selected as minValuedToken or maxValuedToken while
+    paused, contract operations may be disrupted.
+
+    Mitigation:
+    -The DAO must avoid voting in such tokens.
+    -If a paused token is added maliciously (e.g., via flash loan attack on voting), users must vote it out.
+    -The only potential gain for an attacker is causing temporary downtime.
+
+
+    
+    4. Front-End Integration Issue: callStatic & Contract Balance
+    Impact: Incorrect ETH balance shown in callStatic calls
+    Risk: Low
+
+    Issue:
+    -callStatic sends the simulated msg.value, causing incorrect contract balance readings.
+    -Example: A test sending 0.01 ETH in 6 batches of 10 tokens resulted in a contract balance of 0.06 ETH instead of 0
+    ETH. 
+
+    Mitigation: 
+    -Balance retrieval is now performed in a separate call, avoiding this issue.
+
+
+
+    5. Price Feed Vulnerability: Reliance on a Single Data Source
+    Impact: Potential delays or incorrect pricing due to API manipulation or downtime.
+    Risk: Moderate
+
+    Issue:
+    -The contract originally used Chainlink oracles, but due to missing price feeds, it now relies on CMC API.
+    -A single price source introduces risk:
+        -Manipulated API responses could affect transactions.
+        -Downtime on CMC API could delay contract operations.
+    
+    Mitigation:
+    -Adding CoinGecko API as a second data source.
+    -If prices from CMC & CoinGecko differ by more than 2%, transactions will fail to prevent manipulation.
+    -Potential risk remains: a sophisticated attacker could compromise both APIs simultaneously (unlikely, but
+    possible), which would result in the prevention of new transactions. There is no monetary incentive for the
+    attacker in this case.
+
+
+
+    6. Symbol Requirement for Token Addition:
+    Impact: Prevents symbol spoofing for incorrect price lookups.
+    Risk: Low
+
+    Issue:
+    -Tokens without symbol() cannot be added to _index to prevent users from manually submitting incorrect symbols.
+    -Projects that rebrand may lose their original symbol, preventing price lookups.
+
+    Mitigation: 
+    -Ensures only legitimate tokens are added, preventing incorrect pricing data from APIs.
+   
+
+
+    7. Signing Server: Potential DoS Risk
+    Impact: An attacker could overload the signing server by requesting excessive signatures.
+    Risk: Moderate
+
+    Issue:
+    -An attacker can spam the signing server by repeatedly submitting slightly modified transactions to force the
+    server to generate new signatures.
+
+    Mitigation:
+    -IP-based rate limiting on the web server.
+    -Future enhancements may include session-based tracking to prevent VPN/proxy bypassing.
+
+
+
+***Liquidity Pool Manipulation***
+Summary: A threat agent would know the liquidity pool of the maxValuedToken calculated in the public
+getMaxValuedToken(), and could alter the ratio of the liquidity pool to ensure that user trades from sellTif() do not
+go through under the maximimum 2% price impact. This would be a temporary issue, as liquidity pool providers would be
+monetarily incentivized to fix the ratio of the pool, and users purchasing TIFDAO Tokens would have the potential to
+create a new maxValuedToken over time with new buyTif() transactions. Smaller user sellTif() transactions may still go
+through safely in this instance, but this means that users could have periods where they are unable to sell the amount
+of tokens that they want. There is an inherant bias in larger buyTif() transactions only being possible in larger
+liquidity pools, which are typically more established and popular tokens, so the threat agent would likely have to
+spend a large amount of money to manipulate the pool ratio. In such a case, their only gain would be pausing user
+sellTif() transactions for a period of time. As sellTif() requires multiple calculations on the maxValuedToken it is
+not feasible to make these calculations with the up to 100 tokens of the TIFDAO Index on-chain.
+
+
+
+***Gas Cost of Looping Through _index***
+Summary: In the worst-case scenario, if all 100 tokens in getActiveTokens() are active, the gas usage would be
+~220,000 to loop through _index. This is within a reasonable price range and well within the targeted block limit of 15
+million gas. The functions that loop through _index on-chain are addTokenToIndex(), removeTokenFromIndex(), and 
+sellRemovedToken(). The breakdown is as follows:
+
+Single Storage Read for _totalTokensInIndex
+    Reading _totalTokensInIndex once at the beginning and caching it in memory avoids repeated storage reads.
+    Gas cost: ~2,100 gas
+
+Looping Costs with Memory Caching (100 tokens)
+    Accessing the cached _totalTokensInIndex value in memory rather than storage. Memory accesses within a loop cost ~3
+    gas each. 
+    Gas cost: 100 × 3 = 300 gas
+
+Array Push Cost (100 Active Tokens)
+    Each push() operation for an active token to the array costs ~200 gas.
+    Gas cost: 100 × 200 = 20,000 gas
+
+Returning the Array (100 Items)
+    Returning a large array incurs costs for memory allocation and data copying. Estimated ~2,000 gas per item for
+    allocation and copy. 
+    Gas cost: 100 × 2,000 = 200,000 gas
+
+USD Cost of Execution
+    At 50 gwei gas price (The average in 2024 was ~17 so this assumes a higher than average price) and ETH at $2,000:
+    USD cost: 222,400 × 50 × 10^−9 × 2000 = $22.24
+    (For reference, at 17 gwei, the cost would be ~$7.56.)
+
+
+
+***Code Analysis***
+
+Does the contract use the correct compiler version?: 
+    Yes, ^0.8.27 is used allowing for bugfix releases until version 0.9.0.
+
+Are files imported and inherited correctly?: 
+    Yes, all files are imported and inherited correctly.
+
+
+
+Function:   constructor()
+
+Does the function have the correct visibility?
+    Yes, as there is no function visibilty for constructors in the Solidity version used.
+
+Does this function have the correct access control?
+    Yes, as there is no access control for constructors. 
+
+What does this function do? 
+    -The constructor takes the address of the Token.sol contract as parameter tifAddress_ which is passed in
+    scripts/deploy.js, where the address is then saved. An instance of the Token.sol contract is then saved to be
+    interacted with. 
+    -_grantRole() temporarily sets the DEFAULT_ADMIN_ROLE as the deployer's address in order to assign the
+    GOVERNANCE_ROLE to the Governance.sol contract in scripts/deploy.js. The DEFAULT_ADMIN_ROLE is then removed at the
+    end of scripts/deploy.js in the line:
+    await deployedMainContract.revokeRole(defaultAdminRole, deployer.address);
+    -60 tokens are then added to the _index mapping, setting the address and symbol of each token as well as listing
+    each token as active and not removed from the TIFDAO Index.
+
+
+
+Function:   getTokenSymbol(address token) external view returns (bytes32)
+
+Does the function have the correct visibility?
+    Yes, this function is meant to be called externally by the front-end.
+
+Does this function have the correct access control?
+    Yes, this function does not need access control as it's a view function returning non-sensitive data.
+
+What does this function do? 
+    This function loops through every token in the _index mapping including the tokens that are not currently active in
+    the index, and returns the tokenSymbol from the IndexData struct for the token provided in the function parameters.
+    If the user inputs a token address for a token that isn't in the TIFDAO Index, the error SymbolNotFound() occurs.
+
+
+
+Function:   getCurrentPrice(uint256 runningValueTotal) external view returns (uint256)
+
+Does the function have the correct visibility?
+    Yes, this function is meant to be called externally by the front-end.
+
+Does this function have the correct access control?
+    Yes, this function does not need access control as it's a view function returning non-sensitive data.
+
+What does this function do? 
+    This function takes the runningValueTotal of all tokens within the TIFDAO Index (and the Main.sol contract
+    balance), gets the current totalSupply() of the Token.sol contract, then divides the runningValueTotal by the
+    totalSupply() to calculate the value of one TIFDAO Token in Ether. A non-zero runningValueTotal and totalSupply()
+    is required, which is always the case after the exchange ratio transaction is made following deployment. If not,
+    the error InvalidZeroInput() occurs from Utils.sol.
+
+
+
+Function:   getRunningValueTotal(
+                address[] memory activeTokens, 
+                uint256[] memory tokenPrices, 
+                uint256 numOfActiveTokens
+            )
+                external                                                
+                view
+                returns (uint256[] memory tokenValues, uint256 runningValueTotal) 
+
+Does the function have the correct visibility?
+    Yes, this function is meant to be called externally by the front-end.
+
+Does this function have the correct access control?
+    Yes, this function does not need access control as it's a view function returning non-sensitive data.
+
+What does this function do? 
+    This function calculates the runningValueTotal of all of the tokens within the TIFDAO Fund as well as the Ether
+    balalce of the Main.sol contract. The runningValueTotal is used in getCurrentPrice() as well as to calculate the
+    allocation of each token in the TIFDAO Fund on the front-end. The inputs of _multiply() are both in 18 decimal
+    format and verified to be non-zero by checks in the function. 
+
+
+
+Function:   mintUserContribution(
+                uint256 msgValue, 
+                MinValuedToken memory minValuedTokenInfo, 
+                uint256 runningValueTotal
+            ) 
+            external 
+            returns (uint256)
+
+Does the function have the correct visibility?
+    Yes, this function is meant to be called externally by the front-end.
+
+Does this function have the correct access control?
+    Yes, this function does not need access control as it returns non-sensitive data.
+
+What does this function do? 
+    This function uses the front-end input as the msgValue as well as the calculated minValuedTokenInfo and
+    runningValueTotal to provide the user with a quote of the amount of TIFDAO Tokens they should receive if they
+    execute the transaction. The msgValue is converted to 18 decimal format on the front-end, and the runningValueTotal
+    is in 18 decimal format as well to be used by _multiply().
+
+
+
+Function:   burnUserContribution(
+                uint256 userTokensToBurn,
+                MaxValuedToken memory maxValuedTokenInfo,
+                uint256 runningValueTotal
+            ) 
+                external
+                returns (uint256, uint256)
+
+Does the function have the correct visibility?
+    Yes, this function is meant to be called externally by the front-end.
+
+Does this function have the correct access control?
+    Yes, this function does not need access control as it's returning non-sensitive data.
+
+What does this function do? 
+    This function uses the front-end userTokensToBurn input to calculate the Ether to be received by the user if they
+    execute the transaction. If the full userTokensToBurn cannot be sold in a single transaction, then this function
+    provides the amount that can be sold which the front-end updates for the user. userTokensToBurn is in 18 decimal
+    format from the front-end, as well as all of the values used in the function. The expectedOutput from the Uniswap
+    v1 Quoter must be greater than the calculated minTokenOutput otherwise the error InsufficientOutputAmount() occurs.
+
+
+
+Function:   buyTif(
+                bytes memory signature,
+                uint256 timestamp,
+                MinValuedToken memory minValuedTokenInfo, 
+                uint256 runningValueTotal
+            ) 
+                external 
+                payable 
+                onlyValidSignatureBuyTif(
+                    signature,
+                    timestamp,
+                    msg.sender,
+                    minValuedTokenInfo.tokenAddress,
+                    minValuedTokenInfo.minTokenOutput,
+                    minVlauedTokenInfo.tokenPrice,
+                    minValuedTokenInfo.tokenAmount,
+                    minValuedTokenInfo.tokenValue,
+                    runningValueTotal
+                ) 
+
+Does the function have the correct visibility?
+    Yes, this function is meant to be called externally by the front-end.
+
+Does this function have the correct access control?
+    Yes, this function is meant to be called by anyone, however, a valid signature signed by the signing server must be
+    provided from the front-end to ensure only transactions sent from the front-end are valid.
+
+What does this function do? 
+    This function is called by the front-end to purchase TIFDAO Tokens. It requires a valid signature signed by the
+    signing server, and the minValuedTokenInfo and runningValueTotal calculated on the front-end. First the function
+    checks that the timestamp of the users transaction is less than _lastTimestampCalled of the block buyTif() or
+    sellTif() was called last, to ensure multiple transactions within the same block are not using the same input
+    values which would generate incorrect minting values to the user. If timestamp < _lastTimestampCalled the error 
+    OutdatedInputData() occurs. This function then calls _getMsgValue() to return the msg.value of the transaction. The
+    swap _ethToMinTokenFromMsgValue() is then performed, where the 1.5% fee is taken and the Main.sol contract receives 
+    the minValuedToken from the swap if the swap amount is greater than the minTokenOutput calculated in 
+    getMinValuedToken().  _mintUserContribution() is then called to mint the tokens to the user based on the value of
+    their added tokens vs the runningValueTotal of the tokens and the Ether balance of the Main.sol contract. A minimum 
+    msg.value of 1000 Wei is required as the fee calculation divides the msg.value by 1000, otherwise the error 
+    InsufficientInputAmount() occurs.
+
+
+
+Function:   _getMsgValue() internal view returns (uint256)
+
+Does the function have the correct visibility?
+    Yes, this function is meant to be called internally within buyTif() and getMinValuedTokenInfo().
+
+Does this function have the correct access control?
+    Yes, as this is an internal function only called by functions within the contract.
+
+What does this function do?
+    This function simply stores the transaction's msg.value to for use in buyTif() and getMinValuedTokenInfo().
+
+
+
+Function:   _mintUserContribution(MinValuedToken memory minValuedTokenInfo, uint256 runningValueTotal) internal 
+
+Does the function have the correct visibility?
+    Yes, this function is meant to be called internally within buyTif().
+
+Does this function have the correct access control?
+    Yes, as this is an internal function only called within buyTif().
+
+What does this function do?
+    This function uses the value of the tokens added by the user vs the existing runningValueTotal to calculate the
+    amount of TIFDAO Tokens the user will receive. The uint256 variables in minValuedTokenInfo  and the 
+    runningValueTotal are in 18 decimal format. This function also emits the event TokensMinted. It's called after the
+    token swap _ethToMinTokenFromMsgValue() in buyTif().
+
+
+
+Function:   sellTif(
+                bytes memory signature,
+                uint256 timestamp, 
+                uint256 userTokensToBurn, 
+                MaxValuedToken memory maxValuedTokenInfo, 
+                uint256 runningValueTotal
+            )
+                external 
+                onlyValidSignatureSellTif(
+                    signature,
+                    timestamp,
+                    msg.sender,
+                    userTokensToBurn,
+                    maxValuedTokenInfo.tokenAddress,
+                    maxValuedTokenInfo.tokenPrice,
+                    maxValuedTokenInfo.tokenAmount,
+                    maxValuedTokenInfo.tokenValue,
+                    runningValueTotal
+                )
+
+Does the function have the correct visibility?
+    Yes, this function is meant to be called externally by the front-end.
+
+Does this function have the correct access control?
+    Yes, this function is meant to be called by anyone, however, a valid signature signed by the signing server must be
+    provided from the front-end to ensure only transactions sent from the front-end are valid.
+
+What does this function do?
+    This function is called by the front-end to sell TIFDAO Tokens. It requires a valid signature signed by the signing
+    server, userTokensToBurn from the front-end interface, and the calculated maxValuedTokenInfo and runningValueTotal
+    from getMaxValuedToken(). First the function checks that the timestamp of the users transaction is greater than 
+    _lastTimestampCalled of the block buyTif() or sellTif() was called last, to ensure multiple transactions within the
+    same block are not using the same input values which would generate incorrect burn values to the user. If timestamp 
+    < _lastTimestampCalled the error OutdatedInputData() occurs. userTokensToBurn is in 18 decimal format from the
+    front-end, and the value must be greater than 0 otherwise the error InsufficientInputAmount() occurs. This function 
+    calls _burnUserContribution() to calculate the amount of tokens to be burned if the full amount cannot be in a
+    single transaction. An approval transaction is required to approve the Main.sol contract to burn the tokens on
+    behalf of the user, and the approval automatically triggers before the call to sellTif() on the front-end.
+
+
+
+Function:   _burnUserContribution(
+                uint256 userTokensToBurn,
+                MaxValuedToken memory maxValuedTokenInfo,
+                uint256 runningValueTotal
+            )
+                internal 
+
+Does the function have the correct visibility?
+    Yes, this function is meant to be called internally within sellTif().
+
+Does this function have the correct access control?
+    Yes, as this is an internal function only called within sellTif().
+
+What does this function do?
+    This function calculates if the amount of userTokensToBurn can be burned in a single transaction, and if not it
+    burns only what is possible. It should be able to burn all of userTokensToBurn as the user input is changed from
+    the call to burnUserContribution. This function is called within sellTif(), and it ensures that the expectedOutput
+    from the Uniswap v1 Quoter is greater than the calculated minTokenOutput from _getMintokenOutputSell(), otherwise
+    it reverts with InsufficientOutputAmount(). The swap _maxTokenToEthFromMaxToken() is performed, where the 1.5% fee is
+    taken after the swap operation. Tokens are then burned and the event TokensBurned is emitted.
+
+
+
+Function:   _getMinTokenOutputSell(uint256 maxTokenAmountToSell, MaxValuedToken memory maxValuedTokenInfo)
+                internal 
+                pure 
+                returns (uint256) 
+
+Does the function have the correct visibility?
+    Yes, this function is meant to be called internally within _burnUserContribution().
+
+Does this function have the correct access control?
+    Yes, as this is an internal function only called within _burnUserContribution().
+
+What does this function do?
+    This function takes maxTokenAmountToSell and the tokenPrice from maxValuedTokenInfo to calculate the minimum WETH
+    output to accept, accounting for a 2% maximum price impact. This 2% includes the 0.3% fee from the Uniswap v3 swap
+    operation, as well as an allowable 1.7% tolerance. The 1.5% fee is dealt with in _maxTokenToEthFromMaxToken().
+
+
+
+Function:   getActiveTokens(uint256 start, uint256 end) 
+                external 
+                view 
+                returns (address[] memory activeTokens, bytes32[] memory activeSymbols, uint256 numOfActiveTokens)
+
+Does the function have the correct visibility?
+    Yes, this function is meant to be called externally by the front-end.
+
+Does this function have the correct access control?
+    Yes, this function does not need access control as it's a view function returning non-sensitive data.
+
+What does this function do?
+    This function takes a start and end value, where if the values are 0 and 100 it is used in getMaxValuedToken() and
+    if not it is used with batches of 10 tokens in getMinValuedToken() to limit gas used per static call. If
+    tokenActive is true for a token in the _index mapping then it's added to a list called activeTokens and its symbol
+    is added to the list activeSymbols to be used for token price retrieval. 
+
+
+
+Function:   _isTokenPaused(address token) public returns (bool)
+
+Does the function have the correct visibility?
+    Yes, this function is meant to be called internally within getMinValuedToken() and getMaxValuedToken(). 
+
+Does this function have the correct access control?
+    Yes, as this is an internal function only called within getMinValuedToken() and getMaxValuedToken().
+
+What does this function do?
+    This function creates an instance of the active token being checked within getMinValuedToken() or
+    getMaxValuedToken() and makes a call to see if the token contract implements the paused() function to ensure it's
+    not currently paused. There is a limit of 50000 gas per call as some contracts revert with 'Invalid FE Opcode'
+    which uses up a lot of gas generating out of gas errors. Ensures the call succeeds or else false is returned.
+
+
+
+Function:   getMinValuedToken(address[] memory activeTokens, uint256[] memory tokenPrices, uint256 numOfActiveTokens)
+                external 
+                payable
+                returns (MinValuedToken memory minValuedTokenInfo, uint256 runningValueTotal) 
+
+Does the function have the correct visibility?
+    Yes, this function is meant to be called externally by the front-end.
+
+Does this function have the correct access control?
+    Yes, this function does not require access control as it does not change state within Main.sol, it just makes two
+    external calls to the BALANCE_SCANNER contract and to getUniswapQuote().
+
+What does this function do?
+    This function returns the data of the minValuedToken within the TIFDAO Fund at the time it is run. It ensures that
+    the balance check of all tokens is successful, before confirming the minValuedToken contract is not paused(). Next,
+    it calculates the value of each token within the index to be added to the runningValueTotal. A minTokenOutput is
+    calculated before comparing this value to the expected output from a Uniswap v3 swap via the Uniswap v1 quoter. If
+    a token passes all of these checks it is set as the minValuedToken and compared against the results of all of the
+    tokens currently active within _index. The function is payable as a simulated msg.value is required by front-end
+    calls.
+
+
+
+Function:   _getMinTokenOutputBuy(uint256 availableMsgValue, uint256 tokenPrice)
+                internal 
+                pure 
+                returns (uint256)
+
+Does the function have the correct visibility?
+    Yes, this function is meant to be called internally from getMinValuedToken().
+
+Does this function have the correct access control?
+    Yes, this function is pure and only called internaly from getMinValuedToken().
+
+What does this function do?
+    This function takes the availableMsgValue (Accounting for the 1.5% fee) and the price of the token to calculate the
+    expected amount of tokens received if swapped. It then gets 98% of this value to allow for the 0.3% Uniswap
+    liquidity pool fee and a 1.7% allowable tolerance. This value is compared against the actual Uniswap v1 quoter
+    result ensuring only swaps expecting a greater amount than minTokenOutput are executed. Both inputs are in 18
+    decimal format for _divide().
+
+
+
+Function:   getMaxValuedToken(address[] memory activeTokens, uint256[] memory tokenPrices, uint256 numOfActiveTokens)
+                external 
+                returns (MaxValuedToken memory maxValuedTokenInfo, uint256 runningValueTotal) 
+
+Does the function have the correct visibility?
+    Yes, this function is meant to be called externally by the front-end.
+
+Does this function have the correct access control?
+    Yes, this function does not change the state of Main.sol and makes a single call to BALANCE_SCANNER to get the
+    token balances held by the TIFDAO Fund.
+
+What does this function do?
+    This function returns the data of the maxValuedToken within the TIFDAO Fund at the time it is run. It ensures that
+    the balance check of all tokens is successful, before confirming the maxValuedToken contract is not paused(). Next,
+    it calculates the value of each token within the index to be added to the runningValueTotal. The token with the
+    greatest value is then set as the maxValuedToken().
+
+
+
+Function:   addTokenToIndex(address tokenToAdd) external onlyRole(GOVERNANCE_ROLE)
+
+Does the function have the correct visibility?
+    Yes, this contract is meant to be called externally by the Governance.sol contract through successful proposal
+    execution. 
+
+Does this function have the correct access control?
+    Yes, this contract is onlyRole(GOVERNANCE_ROLE) meaning only Governance.sol can call it. This role is provided in
+    scripts/deploy.js in the line:
+    await deployedMainContract.grantRole(governorRoleHash, governance.address);
+
+What does this function do?
+    This function adds a single token to the TIFDAO Index. It ensures adding the token does not cause the
+    _totalTokensInIndex to exceed the maximum value of 100 otherwise the error MaximumTokenQuantity() occurs. If the
+    token is already in the TIFDAO Index then the error TokenAlreadyAdded() occurs. If the token was already in the
+    TIFDAO Index but removed before, it's tokenActive is set back to true. If the token has never been in the TIFDAO
+    Index then it's symbol() is retrieved, where if the added token contract does not have the function it reverts with
+    InvalidTokenSymbol(). If there is a valid symbol() then the token is added to _index. The event TokenAdded is
+    emitted on successfuly adding a token.
+
+
+
+Function:   removeTokenFromIndex(address tokenToRemove) external onlyRole(GOVERNANCE_ROLE)
+
+Does the function have the correct visibility?
+    Yes, this function is meant to be called externally by the Governance.sol contract through successful proposal
+    execution.
+
+Does this function have the correct access control?
+    Yes, this contract is onlyRole(GOVERNANCE_ROLE) meaning only Governance.sol can call it. This role is provided in
+    scripts/deploy.js in the line:
+    await deployedMainContract.grantRole(governorRoleHash, governance.address);
+
+What does this function do?
+    This function removes a single token from the TIFDAO Index. It ensures it hasn't been called for a period of one
+    week otherwise the error RemovalLimitReached() occurs. It also ensures that removing the token would not go below
+    MIN_TOKENS_IN_INDEX or the error MinimumTokenQuantity() occurs. tokenRemoved is then set to true. If there is no
+    balance of the token in the TIFDAO Fund then the token is set to inactive and tokenRemoved set back to false.
+
+
+
+Function:   _setTokenRemoved(address tokenToRemove) internal
+
+Does the function have the correct visibility?
+    Yes, this function is meant to be called internally by removeTokenFromIndex().
+
+Does this function have the correct access control?
+    Yes, this function does not require access control as it's only called internally through removeTokenFromIndex()
+    which requires the call to be from Governance.sol.
+
+What does this function do?
+    This function sets the tokenRemoved value of the token to true in _index, and if it's already set to true the
+    function reverts with TokenAlreadyRemoved().
+
+
+
+Function:   sellRemovedToken(
+                bytes memory signature, 
+                uint256 timestamp, 
+                address removedToken, 
+                uint256 percentOfTokenToSell, 
+                uint256 priceOfTokenInEth
+            ) 
+                external 
+                payable
+                onlyValidSignatureSellRemoved(
+                    signature,
+                    timestamp, 
+                    msg.sender,
+                    removedToken,
+                    percentOfTokenToSell,
+                    priceOfTokenInEth
+            )
+
+Does the function have the correct visibility?
+    Yes, this function is meant to be called externally from the front-end. 
+
+Does this function have the correct access control?
+    Yes, this function requires a valid signature from the sign server to be executed, ensuring this function can only
+    be called through the front-end interface.
+
+What does this function do?
+    This function checks that the token has already been removed first. It gets the balance of the token held by
+    Main.sol tnd calculates the percentage of the balance entered by the user. Then it calculates the minTokenOutput
+    for the swap before executing _removedTokenToEthFromRemovedToken(). If the whole balance is sold then the token is
+    set to inactive. The percentageOfTokenToSell is between 1 and 100 from the front-end. It's payable as the contract
+    receives the Ether from the token swap.
+
+
+
+Function:   _getTokenRemoved(address removedToken) internal view returns (bool)
+
+Does the function have the correct visibility?
+    Yes, this function is meant to be called internally via sellRemovedToken().
+
+Does this function have the correct access control?
+    Yes, this function is a view function only called internally via sellRemovedToken().
+
+What does this function do?
+    This function loops through all of the tokens in the TIFDAO Index and searches for the removedToken. If
+    tokenRemoved is false it reverts with TokenNotRemoved(), otherwise it returns true. If the removedToken is not
+    currently in the TIFDAO Index a value of false is returned.
+
+
+
+Function:   _setTokenToFalse(address tokenToRemove) internal
+
+Does the function have the correct visibility?
+    Yes, this function is meant to be called internally via removeTokenFromIndex() and sellRemovedToken().
+
+Does this function have the correct access control?
+    Yes, this function does not have access controls as it's only called internally from functions that do.
+
+What does this function do?
+    This function loops through all keys in _index to find tokenToRemove. If it's found but tokenActive is already
+    false then the error TokenAlreadyInactive() occurs. Otherwise tokenActive and tokenRemoved are set to false and the
+    event TokenRemoved is emitted.
+
+
+
+Function:   _getMinTokenOutputRemoved(uint256 tokenAmountToSell, uint256 priceOfTokenInEth)
+                internal
+                pure
+                returns (uint256)
+
+Does the function have the correct visibility?
+    Yes, this function is called internally from sellRemovedToken().
+
+Does this function have the correct access control?
+    Yes, this function does not require access control as it's called internally from a function that does.
+
+What does this function do?
+    This function calculates the minTokenOutput for a token swap in sellRemovedToken(). No fee is taken as it's a
+    reallocation of existing TIFDAO Fund assets. 
+
+
+
+Function:   reinvestFundEther(
+                bytes memory signature,
+                uint256 timestamp,
+                uint256 percentOfBalance, 
+                MinValuedToken memory minValuedTokenInfo
+            ) 
+                external 
+                onlyValidSignatureReinvest(
+                    signature,
+                    timestamp,
+                    msg.sender, 
+                    percentOfBalance, 
+                    minValuedTokenInfo.tokenAddress,  
+                    minValuedTokenInfo.minTokenOutput,
+                    minValuedTokenInfo.tokenPrice,
+                    minValuedTokenInfo.tokenAmount,
+                    minValuedTokenInfo.tokenValue
+                ) 
+
+Does the function have the correct visibility?
+    Yes, this function is meant to be called externally from the front-end.
+
+Does this function have the correct access control?
+    Yes, this function requires a valid signature from the sign server to be executed, ensuring this function can only
+    be called through the front-end interface.
+
+What does this function do?
+    This function takes a percentage and the minValuedToken data and executes a swap through
+    _ethToMinTokenFromThisBalance(). If there is no balance then the error NoContractBalance() occurs. percentOfBalance
+    is between 1 and 100 from the front-end.
+
+
+
+***Known Vulnerabilities: (https://scsfg.io/hackers/)***
+
+ABI Hash Collisions:
+    -Hashes of abi.encodePacked() are used in Validate.sol in the functions isValidSignatureBuyTif(),
+    isValidSignatureSellTif(), isValidSignatureSellRemoved(), and isValidSignatureReinvest(). This is safe, however, as
+    all of the values are of fixed length (either address, uint256, bytes32 and a fixed-length string of 28 bytes), and
+    this vulnerability only arises when a hash calculation is used with packed ABI-encoded data that includes multiple 
+    variable-length arguments. 
+
+Ambiguous Evaluation Order: 
+    -Main.sol and all imported contracts utilize Solidity version ^0.8.x. which enforces explicit evaluation order
+    -Main.sol implements intermediate results and mostly deals with two values at a time through Utils.sol _multiply()
+    and _divide(). For other values, parenthesis are used to ensure the operations are performed in the expected order,
+    for example:
+    uint256 availableMsgValue = ((985 * msgValue) / 1000);
+
+Approval Vulnerabilities: 
+    -Approval is required before _burnUserContribution() can call burnFrom() in sellTif() transactions. Only the amount
+    required is approved, no infinite approval is used to protect the user from malicious spending if the contract is
+    hacked. The cost of this to the user is having to call approve() every sellTif() transaction. The front-end 
+    automatically calls approve() before sellTif().
+    -See audit_Token.sol.txt for further information regarding approval frontrunning.
+
+Exposed Data:
+    -No sensitive data is used or stored on chain by any function in Main.sol, including private keys, signatures, or
+    user data. Hashes of function parameters are stored in order to ensure protection against replay attacks. 
+
+Frontrunning:
+    1.Displacement Attack Scenario:
+    -Attacker sees a pending buyTif() or sellTif() transaction.
+    -They submit the same transaction with a higher gas price to execute first.
+    -If successful, the original user’s transaction might fail or become irrelevant.
+
+    Protections:
+    -ethSignedMessageHash storing prevents replay once a transaction is executed, as the same hash cannot be reused.
+    -The signing server only signs fresh transactions, so even if an attacker copies the data, they cannot generate a
+    valid signature.
+    -Using block.timestamp for _lastTimestampCalled ensures that any transaction with an older timestamp fails.
+
+    Attack Outcome:
+    -If the attacker executes first, the original transaction fails due to timestamp < _lastTimestampCalled.
+    -They gain nothing because the victim must recalculate and get a new signature from the signing server.
+
+
+    2. Insertion Attack Scenario (Sandwiching):
+    -An attacker buys the token before a user's swap to artificially increase the price.
+    -The swap executes at an inflated price, meaning the user overpays.
+    -After the swap, the attacker sells at a profit, driving the price back down.
+
+    Protections:
+    -minTokenOutput ensures the TIFDAO Fund doesn't lose more than 2% of input value, rejecting manipulated swaps.
+    -Using _lastTimestampCalled forces users to always execute the most up-to-date transaction.
+
+    Attack Outcome:
+    -Minimum output protection ensures the swap fails if price slippage exceeds 2%.
+    -Attackers cannot profit because they cannot force the swap at a worse price.
+
+
+    3. Suppression Attack Scenario:
+    -An attacker spams high gas price transactions to delay user transaction execution.
+    -If delayed too long, user transaction may expire before it executes.
+    -This could force users to recalculate function parameters on the front-end before executing again.
+
+    Protections:
+    -The signing server already prevents transactions older than 10 minutes, meaning delays are limited.
+    -Transactions using outdated data will fail if timestamp < _lastTimestampCalled, meaning no bad transactions get
+    through.
+    -EIP-1559 reduces block stuffing efficiency by burning base fees.
+
+    Attack Outcome:
+    -If gas prices spike or the network is congested, users may have to wait before executing.
+
+Griefing Attacks:
+    1. Transaction Griefing:
+    -Attackers cannot submit the same transaction multiple times as the hash is stored to prevent this.
+
+    2. Signature Spamming:
+    -Attackers can overload the signing server by repeatedly submitting slightly modified transactions and force the
+    signing server to issue new ones.
+    -This will be dealt with on the server with IP-based rate limits.
+    -Only hashes of valid signatures are stored.
+
+    3. Gas Griefing:
+    -_isTokenPaused() checks the return value to ensure success, otherwise false is returned.
+
+Incorrect Parameter Order:
+    -All function parameters are clearly defined and used in the expected order, including on the front-end.
+
+Oracle Manipulation Attacks:
+    1. Spot Price Manipulation (DEX-based):
+    Vulnerability: 
+    -If a smart contract relies on a single on-chain source (e.g., Uniswap spot price), attackers can use flash loans
+    to manipulate the price for a single block, making tokens look much more expensive or cheaper.
+    
+    Protection:
+    -On-chain prices are not used, quotes are fetched but are compared to a minimum output calculated from off-chain
+    prices.
+
+    2. Off-Chain Oracle Manipulation: 
+    Vulnerability:
+    -Currently using only CMC API is a vulnerability, so the new approach will be to also utilize CoinGecko's API and
+    ensure the two prices are within 2% of eachother before averaging them together. If this is not the case, an error
+    will be generated, as well as if only one price source is available. 
+    
+    Remaining Risk:
+    -Both CMC and CoinGecko could be manipulated at the same time (unlikely but theoretically possible). The only gain
+    to an attacker in this case would be delaying transactions to the Main.sol contract.
+    -One of the two APIs might experience downtime, leading to delays in fetching prices.
+    -A hacked API could return incorrect but still “realistic” prices within 2%.
+
+Reentrancy Attacks:
+    -State is changed before communicating with Uniswap contracts externally in sellTif(). It is not possible to do
+    this in buyTif() as the swap needs to go through to calculate how many tokens the user added to the TIFDAO Fund
+    with their purchase. This is not an issue as Uniswap v3 swaps do not trigger arbitrary external calls:
+    
+    1. buyTif():
+    // Execute the external swap
+    _ethToMinTokenFromMsgValue(msgValue, minValuedTokenInfo);
+    
+    // Mint after the swap 
+    _mintUserContribution(msgValue, runningValueTotal);
+
+    2. sellTif():
+    // Burn first to prevent reentrancy
+    _tifInstance.burnFrom(msg.sender, burnData.tifToBurn);
+
+    // Now execute the external swap
+    _maxTokenToEthFromMaxToken(
+        burnData.minTokenOutput,
+        burnData.maxTokenAmountToSell,
+        maxValuedTokenInfo
+    );
+
+    3. _isTokenPaused() implements call():
+    -It does not modify contract state.
+    -It only reads from an external contract (paused()).
+    -It returns a boolean value but does not trigger any follow-up transactions.
+    -The external call (.call{ gas: GAS_LIMIT }) does not send ETH or allow reentrant execution.
+    -Reentrancy is typically exploited when sending ETH (call.value() or .transfer()).
+    -Since the function only queries the paused() state, an attacker cannot hijack execution flow.
+
+    4. Cross-Contract Reentrency:
+    -Main.sol does not rely on another contract's balance function to determine execution paths.
+    -In BalanceScanner the balances are read before any action is taken.
+    -quoteExactInputSingle() does not execute trades, only provides quotes.
+
+Signature-related Attacks:
+    -Signatures are used for buyTif(), sellTif(), sellRemovedToken(), and reinvestFundEther(). 
+
+    Protection:
+    -Ensuring that if erecover() returns address(0) it fails as it's compared against the signer's address which is
+    hard-coded into Validate.sol.
+    -All necessary transaction data is included in the signed message to prevent frontrunning attacks.
+    -Signatures expire after 10 minutes to prevent users submitting data that is older than 10 minutes.
+    -Signatures must have valid v and s values or the function reverts.
+    -Replay attacks are prevented:
+    if (usedSignatures[ethSignedMessageHash])
+        revert SignatureUsedBefore();
+    usedSignatures[ethSignedMessageHash] = true;
+    -Cross-chain replay attacks are prevented as the project only runs on the Ethereum Mainnet.
+    -EIP-2098 compact signatures can't be used as signature.length must equal 65 bytes.
+
+Unexpected Ether Transfers:
+    -This is not an issue as any additional Ether sent to the contract increases the value of the TIFDAO Tokens held by
+    existing users. if 1 TIFDAO = 1 Ether and another Ether is sent then 1 TIFDAO = 2 Ether.
+    -The contract doesn’t refund or execute unexpected transfers in response to received Ether.
+
+Unprotected Swaps:
+    -Each swap includes a minimumTokenOutput of 98% of the input value to ensure attackers cannot manipulate the price
+    in a way that hurts the TIFDAO Fund. If the quote (which is compared against the minTokenOutput) is manipulated, it
+    will not execute unless the quote is manipulated in the favor of the TIFDAO Fund:
+
+    1. _ethToMinTokenFromMsgValue():
+    amountOutMinimum: minValuedTokenInfo.minTokenOutput
+
+    2. _maxTokenToEthFromMaxToken():
+    amountOutMinimum: minTokenOutput
+
+    3. _removedTokenToEthFromRemovedToken():
+    amountOutMinimum: minTokenOutput
+
+    4. _ethToMinTokenFromThisBalance():
+    amountOutMinimum: minValuedTokenInfo.minTokenOutput
+
+Address Validation:
+    -Roles and contract assignments are completed in the constructor, or hard-coded if the values are known before
+    deployment.
+    -recoveredSigner == BACKEND_ADDRESS ensures signatures are only signed by the signing server.
+    -address(0) cannot be added as a token in the TIFDAO Index due to checks in Governance.sol's propose().
+
+Overflow & Underflow:
+    -Solidity 0.8.x has built-in overflow & underflow protection, and unchecked{} is used where it is safe as described
+    by the comments before unchecked blocks.
+
+Self-Destruct:
+    -selfdestruct() is not used anywhere in Main.sol
+
+Insecure Randomness:
+    -All calculations are deterministic.
+
+Flash Loan Attacks:
+    -DEX swaps all include a minimum output.
+
+Storage Collisions:
+    -Main.sol is not upgradeable so the storage layout does not change dynamically. 
+
+
+
+***Solhint***
+Summary: The OpenZeppelin Wizard (v4 and v5) both still use this method of import which I use for Token.sol and
+Governance.sol. To maintain project consistency I am using this import method throughout the project, even though I
+realize @openzeppelin/contracts v5 has made the change to individual imports. The low level call in _isTokenPaused() is
+required, in order to set the gas limit for each call to ensure Invalid FE Opcode errors do not use up too much gas.
+
+Default: No issues detected
+
+Recommended:
+contracts/Main.sol
+   12:1   warning  global import of path @openzeppelin/contracts/access/AccessControl.sol is not allowed. Specify names to import individually or bind all exports of the module into a name (import "path" as Name)  no-global-import
+   13:1   warning  global import of path @openzeppelin/contracts/token/ERC20/ERC20.sol is not allowed. Specify names to import individually or bind all exports of the module into a name (import "path" as Name)     no-global-import
+   15:1   warning  global import of path ./BalanceScanner.sol is not allowed. Specify names to import individually or bind all exports of the module into a name (import "path" as Name)                              no-global-import
+   17:1   warning  global import of path ./Token.sol is not allowed. Specify names to import individually or bind all exports of the module into a name (import "path" as Name)                                       no-global-import
+   18:1   warning  global import of path ./interfaces/IPause.sol is not allowed. Specify names to import individually or bind all exports of the module into a name (import "path" as Name)                           no-global-import
+   19:1   warning  global import of path ./extensions/Declare.sol is not allowed. Specify names to import individually or bind all exports of the module into a name (import "path" as Name)                          no-global-import
+   20:1   warning  global import of path ./extensions/Utils.sol is not allowed. Specify names to import individually or bind all exports of the module into a name (import "path" as Name)                            no-global-import
+   21:1   warning  global import of path ./extensions/Swap.sol is not allowed. Specify names to import individually or bind all exports of the module into a name (import "path" as Name)                             no-global-import
+   22:1   warning  global import of path ./extensions/Validate.sol is not allowed. Specify names to import individually or bind all exports of the module into a name (import "path" as Name)                         no-global-import
+  639:45  warning  Avoid to use low level calls                                                                                                                                                                       avoid-low-level-calls
+
+✖ 10 problems (0 errors, 10 warnings)
+
+
+
+***Mythril Analysis***
+Summary: No vulnerabilities were found in any of the functions I created. The flagged issues are within OpenZeppelin's
+library functions, which have already been extensively audited and are not safe to modify. Additionally, the
+BalanceScanner contract is already deployed on Mainnet and has been tested to work as expected. Therefore, no further 
+changes are necessary.
+
+Mythril Analysis Output:
+
+==== Integer Arithmetic Bugs ====
+SWC ID: 101
+Severity: High
+Contract: Token
+Function name: constructor
+PC address: 1271
+Estimated Gas Usage: 27274 - 97646
+The arithmetic operator can underflow.
+It is possible to cause an integer overflow or underflow in the arithmetic operation.
+--------------------
+In file: #utility.yul:27
+
+
+        mstore(0, 3540846713943345059
+
+--------------------
+Initial State:
+
+Account: [CREATOR], balance: 0x0, nonce:0, storage:{}
+Account: [ATTACKER], balance: 0x0, nonce:0, storage:{}
+
+Transaction Sequence:
+
+Caller: [CREATOR], calldata: , decoded_data: , value: 0x0
+
+==== Dependence on predictable environment variable ====
+SWC ID: 120
+Severity: Low
+Contract: Token
+Function name: getPastVotes(address,uint256)
+PC address: 2578
+Estimated Gas Usage: 835 - 930
+A control flow decision is made based on The block.number environment variable.
+The block.number environment variable is used to determine a control flow decision. Note that the values of variables like coinbase, gaslimit, block number and timestamp are predictable and can be manipulated by a malicious miner. Also keep in mind that attackers know hashes of earlier blocks. Don't use any of those environment variables as sources of randomness and be aware that use of these variables introduces a certain level of trust into miners.
+--------------------
+In file: flattened/flattened_Main.sol:3664
+
+require(timepoint < clock(), "ERC20Votes: future lookup")
+
+--------------------
+Initial State:
+
+Account: [CREATOR], balance: 0x0, nonce:0, storage:{}
+Account: [ATTACKER], balance: 0x0, nonce:0, storage:{}
+
+Transaction Sequence:
+
+Caller: [CREATOR], calldata: , decoded_data: , value: 0x0
+Caller: [ATTACKER], function: getPastVotes(address,uint256), txdata: 0x3a46b1a800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000101010101010101010101010101010101010115, decoded_data: ('0x0000000000000000000000000000000000000000', 5731378969925109483151705226338364782964441365), value: 0x0
+
+==== Dependence on predictable environment variable ====
+SWC ID: 120
+Severity: Low
+Contract: Token
+Function name: CLOCK_MODE()
+PC address: 2818
+Estimated Gas Usage: 331 - 426
+A control flow decision is made based on The block.number environment variable.
+The block.number environment variable is used to determine a control flow decision. Note that the values of variables like coinbase, gaslimit, block number and timestamp are predictable and can be manipulated by a malicious miner. Also keep in mind that attackers know hashes of earlier blocks. Don't use any of those environment variables as sources of randomness and be aware that use of these variables introduces a certain level of trust into miners.
+--------------------
+In file: flattened/flattened_Main.sol:3621
+
+require(clock() == block.number, "ERC20Votes: broken clock mode")
+
+--------------------
+Initial State:
+
+Account: [CREATOR], balance: 0x0, nonce:0, storage:{}
+Account: [ATTACKER], balance: 0x0, nonce:0, storage:{}
+
+Transaction Sequence:
+
+Caller: [CREATOR], calldata: , decoded_data: , value: 0x0
+Caller: [SOMEGUY], function: CLOCK_MODE(), txdata: 0x4bf5d7e9, value: 0x0
+
+==== Dependence on predictable environment variable ====
+SWC ID: 120
+Severity: Low
+Contract: Token
+Function name: getPastTotalSupply(uint256)
+PC address: 3611
+Estimated Gas Usage: 570 - 665
+A control flow decision is made based on The block.number environment variable.
+The block.number environment variable is used to determine a control flow decision. Note that the values of variables like coinbase, gaslimit, block number and timestamp are predictable and can be manipulated by a malicious miner. Also keep in mind that attackers know hashes of earlier blocks. Don't use any of those environment variables as sources of randomness and be aware that use of these variables introduces a certain level of trust into miners.
+--------------------
+In file: flattened/flattened_Main.sol:3677
+
+require(timepoint < clock(), "ERC20Votes: future lookup")
+
+--------------------
+Initial State:
+
+Account: [CREATOR], balance: 0x0, nonce:0, storage:{}
+Account: [ATTACKER], balance: 0x0, nonce:0, storage:{}
+
+Transaction Sequence:
+
+Caller: [CREATOR], calldata: , decoded_data: , value: 0x0
+Caller: [SOMEGUY], function: getPastTotalSupply(uint256), txdata: 0x8e539e8c0101010101010101010101010000000000000000000000000000000000000000, decoded_data: (454086624460063511464984254930299632219368948029164232183299219561792929792,), value: 0x0
+
+==== Integer Arithmetic Bugs ====
+SWC ID: 101
+Severity: High
+Contract: BalanceScanner
+Function name: etherBalances(address[])
+PC address: 3843
+Estimated Gas Usage: 3604 - 6996
+The arithmetic operator can underflow.
+It is possible to cause an integer overflow or underflow in the arithmetic operation.
+--------------------
+In file: #utility.yul:465
+
+,  pos)
+        pos := add(pos, 32)
+
+        abi_encode_t_address_to_t_addres
+
+--------------------
+Initial State:
+
+Account: [CREATOR], balance: 0x0, nonce:0, storage:{}
+Account: [ATTACKER], balance: 0x0, nonce:0, storage:{}
+
+Transaction Sequence:
+
+Caller: [CREATOR], calldata: , decoded_data: , value: 0x0
+Caller: [SOMEGUY], function: etherBalances(address[]), txdata: 0xdbdbb51b000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000, decoded_data: (['0x0000000000000000000000000000000000000000'],), value: 0x0
+
+==== Integer Arithmetic Bugs ====
+SWC ID: 101
+Severity: High
+Contract: BalanceScanner
+Function name: tokenBalances(address[],address)
+PC address: 3843
+Estimated Gas Usage: 5387 - 44190
+The arithmetic operator can underflow.
+It is possible to cause an integer overflow or underflow in the arithmetic operation.
+--------------------
+In file: #utility.yul:465
+
+,  pos)
+        pos := add(pos, 32)
+
+        abi_encode_t_address_to_t_addres
+
+--------------------
+Initial State:
+
+Account: [CREATOR], balance: 0x0, nonce:0, storage:{}
+Account: [ATTACKER], balance: 0x0, nonce:0, storage:{}
+
+Transaction Sequence:
+
+Caller: [CREATOR], calldata: , decoded_data: , value: 0x0
+Caller: [SOMEGUY], function: tokenBalances(address[],address), txdata: 0xaad33091000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000, decoded_data: (['0x0000000000000000000000000000000000000000'], '0x0000000000000000000000000000000000000001'), value: 0x0
+
+==== Integer Arithmetic Bugs ====
+SWC ID: 101
+Severity: High
+Contract: BalanceScanner
+Function name: tokensBalance(address,address[])
+PC address: 3843
+Estimated Gas Usage: 5431 - 44234
+The arithmetic operator can underflow.
+It is possible to cause an integer overflow or underflow in the arithmetic operation.
+--------------------
+In file: #utility.yul:465
+
+,  pos)
+        pos := add(pos, 32)
+
+        abi_encode_t_address_to_t_addres
+
+--------------------
+Initial State:
+
+Account: [CREATOR], balance: 0x0, nonce:0, storage:{}
+Account: [ATTACKER], balance: 0x0, nonce:0, storage:{}
+
+Transaction Sequence:
+
+Caller: [CREATOR], calldata: , decoded_data: , value: 0x0
+Caller: [SOMEGUY], function: tokensBalance(address,address[]), txdata: 0xe5da1b6800000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000, decoded_data: ('0x0000000000000000000000000000000000000001', ['0x0000000000000000000000000000000000000000']), value: 0x0
+
+==== Dependence on predictable environment variable ====
+SWC ID: 120
+Severity: Low
+Contract: Token
+Function name: clock()
+PC address: 8364
+Estimated Gas Usage: 268 - 363
+A control flow decision is made based on The block.number environment variable.
+The block.number environment variable is used to determine a control flow decision. Note that the values of variables like coinbase, gaslimit, block number and timestamp are predictable and can be manipulated by a malicious miner. Also keep in mind that attackers know hashes of earlier blocks. Don't use any of those environment variables as sources of randomness and be aware that use of these variables introduces a certain level of trust into miners.
+--------------------
+In file: flattened/flattened_Main.sol:2891
+
+require(value <= type(uint48).max, "SafeCast: value doesn't fit in 48 bits")
+
+--------------------
+Initial State:
+
+Account: [CREATOR], balance: 0x0, nonce:0, storage:{}
+Account: [ATTACKER], balance: 0x0, nonce:0, storage:{}
+
+Transaction Sequence:
+
+Caller: [CREATOR], calldata: , decoded_data: , value: 0x0
+Caller: [SOMEGUY], function: clock(), txdata: 0x91ddadf4, value: 0x0

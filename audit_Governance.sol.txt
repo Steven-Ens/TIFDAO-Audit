@@ -1,0 +1,409 @@
+Governance.sol Security Audit:
+
+***Audit Summary***
+    -This audit assessed Governance.sol and its modifications to inherited OpenZeppelin contract functions.
+    -Modifications to functions work correctly, including additions of the InvalidOperation() error and the security
+    checks added to propose(). This is shown within the tests from 'Function Testing' below.
+    -Getting the token symbol directly from the token contract is more safe than letting users enter any token symbol
+    they would like, as the token symbol is used to get the token price from the coinmarketcap API. If a token on 
+    coinmarketcap has a different symbol from the token contract (from a rebranding, for example), then no price will 
+    be fetched and the token will never be chosen as the minValuedToken. This is a better alternative than potentially
+    making calculations based off of the wrong token's price if a user enters the wrong token symbol, whether
+    maliciously or not. 
+    -The code does not include any known vulnerabilities from https://scsfg.io/hackers/.
+    -No vulnerabilities were found in Mythril.
+    -After review, no security vulnerabilities were found in Governance.sol.
+
+Audit Coverage:
+    -Code Analysis
+    -Known Vulnerabilities
+    -Function Testing
+    -Solhint 
+    -Mythril
+
+
+
+***Code Analysis***
+
+Does the contract use the correct compiler version?: 
+    Yes, ^0.8.27 is used allowing for bugfix releases until version 0.9.0.
+
+Are files imported and inherited correctly?: 
+    Yes, all imports are either from OpenZeppelin version 4.9.6 or from @uniswap/v3-periphery, and are imported and
+    inherited correctly.
+
+
+
+Function: constuctor()
+
+Does the function have the correct visibility?
+    Yes, as there is no function visibilty for constructors in the Solidity version used.
+
+Does this function have the correct access control?
+    Yes, as there is no access control for constructors.
+
+What does this function do?
+    -First, the function requires two parameters; an IVotes interface and the address of the Main.sol contract.
+    -Next, it provides the required function arguments to the parent constructors.
+    -Finally, it sets the _tifAddress which is the address of the Token.sol contract, and explicitly converts it to an
+    address. It also sets _mainAddress within the contract of the Main.sol contract address.
+
+
+
+Function: receive() external payable override(Governor)
+
+Does the function have the correct visibility?
+    Yes, as receive() must be marked as external.
+
+Does the function have the correct access control?
+    No access control is allowed for receive().
+
+What does the function do?
+    This function overrides the default Governor.sol receive() function and reverts the operation with an error
+    InvalidOperation(). Governance for my project does not need the Governance.sol contract to hold an Ether balance.
+
+
+
+Function: function relay(address, uint256, bytes calldata) external payable override(Governor)
+
+Does the function have the correct visibility?
+    Yes, as it's meant to be called externally and I can't override the default visibility.
+
+Does the function have the correct access control?
+    Yes, it was originally onlyGovernance but I removed that so it reverts if called by anyone.
+
+What does the function do?
+    This function overrides the default Governor.sol relay() function and reverts the operation with an error
+    InvalidOperation(). This operation is redundant in my governance model as the contract is the executor of
+    successful proposals, however I wanted to revert just in case somebody tried to manipulate it.
+
+
+
+Function: function updateQuorumNumerator(uint256) external pure override(GovernorVotesQuorumFraction)
+
+Does the function have the correct visibility?
+    Yes, as it's meant to be called externally and I can't override the default visibility.
+
+Does the function have the correct access control?
+    Yes, it was originally onlyGovernance but I removed that so it reverts if called by anyone.
+
+What does the function do?
+    This function overrides the default GovernorVotesQuorumFraction.sol updateQuorumNumerator() function and reverts
+    the operation with an error InvalidOperation(). I do not wish for users to vote on changing the 4% standard that
+    exists across many successful projects, and I do not want it to be manipulated maliciously.
+
+
+
+Function: function setLateQuorumVoteExtension(uint64) public pure override(GovernorPreventLateQuorum)
+
+Does the function have the correct visibility?
+    Yes, it's set to public just like the function it overrides as required by Solidity (can't change to external). 
+
+Does the function have the correct access control?
+    Yes, it was originally onlyGovernance but I removed that so it reverts if called by anyone.
+
+What does the function do?
+    This function overrides the default GovernorPreventLateQuorum.sol setLateQuorumVoteExtension() function and reverts 
+    the operation with an error InvalidOperation(). I believe the two days set in the constructor is a sufficient
+    extension after the quorum is met, to give users time to react. I do not want a malicious threat agent to
+    manipulate this timeframe.
+
+
+
+Function:   function propose(
+                address[] memory targets,
+                uint256[] memory values,
+                bytes[] memory calldatas,
+                string memory description
+            ) 
+                external 
+                override(Governor) 
+                returns (uint256) 
+
+Does the function have the correct visibility?
+    Yes, it's set to public just like the function it overrides as required by Solidity (can't change to external). 
+
+Does the function have the correct access control?
+    Yes, as I want anybody to be able to make a proposal. I have security features to control proposals mentioned in
+    further detail below.
+
+What does the function do?
+    This function overrides the default Governor.sol propose() function to add the following security checks:
+    -Ensures that only one operation is performed per proposal by checking that the targets.length == 1, otherwise an
+    error InvalidProposalQuantity() occurs.
+    -Ensures that the target of the proposal is the Main.sol contract address otherwise an error 
+    InvalidProposalTarget() occurs.
+    -Ensures that the function selector of the calldata is either addTokenToIndex() or removeTokenFromIndex(),
+    otherwise an error InvalidFunctionSelector() occurs.
+    -Ensures that the token to be added is not the address of the Token.sol contract or the WETH contract otherwise an
+    error InvalidProposalToken() occurs.
+    -Ensures that the proposed token to be added has a valid symbol() function, otherwise it reverts with
+    InvalidTokenSymbol().
+    -Ensures that any token added has a valid Uniswap quoter v1 quote otherwise an error InvalidUniswapQuote() occurs.
+
+
+
+The functions votingDelay() and votingPeriod() are overrides of the IGovernor.sol interface, and set the required
+voting delay and period. They are public functions used internally in Governor.sol, and can be queried externally.
+
+
+
+The last three functions are required by Solidity. The first overrides quorum() of IGovernor.sol with
+GovernorVotesQuorumFraction.sol. The next two override proposalDeadline() and _castVote() of Governor.sol with 
+GovernorPreventLateQuorum.sol. I did not make any modifications to these functions.
+
+
+
+***Known Vulnerabilities: (https://scsfg.io/hackers/)***
+
+ABI Hash Collisions:
+    -abi.encodePacked() is not utilized. 
+
+Ambiguous Evaluation Order:
+    -Governance.sol and all imported OpenZeppelin contracts utilize Solidity version ^0.8.x. which enforces explicit
+    evaluation order.
+    -Governance.sol does not utilize any complex expressions with multiple state-changing operations. 
+
+Approval Vulnerabilities:
+    -Governance.sol does not handle ERC-20 approvals, nor does it call approve() or transferFrom() which mitigates
+    this risk.
+
+Exposed Data:
+    -Governance.sol does not use or store sensitive data on-chain. 
+
+Frontrunning:
+    -A malicious actor could frontrun a proposal and manipulate the Uniswap pool to create an incorrect quote, but this
+    is not an issue as as the check is only to see if a quote is possible for the proposed token.
+
+Griefing Attacks:
+    -There are no timed elements in Governance.sol that can be manipulated by a threat agent.
+    -Spam proposals are prevented due to the many security features that ensure only valid tokens can be proposed.
+
+Incorrect Parameter Order:
+    -All function parameters are clearly defined and used in the expected order.
+    -The parameter order in abi.decode() matches the expected input, ensuring correctness.
+
+Oracle Manipulation Attacks:
+    -The Uniswap Quoter itself can be manipulated to provide incorrect quotes, but the function check only checks to
+    see if quotes can be provided for the proposed token to be added.
+
+Reentrancy Attacks: 
+    -The only external contract call is to the Uniswap Quoter v1, and the address is hard coded in a constant variable.
+    -call() and delegatecall() are not used, and no untrusted external contract interactions exist as state is not
+    changed based on the external calls.
+
+Signature-related Attacks:
+    -Governance.sol does not implement signature-based voting, delegation, or execution beyond what is already included
+    in OpenZeppelin’s GovernorVotes.sol.
+    -There are no custom signature validation mechanisms in this contract, all vote counting and delegation rely on the
+    ERC20Votes.sol logic, which securely manages votes using OpenZeppelin’s implementation.
+
+Unexpected Ether Transfers: 
+    -Governance.sol cannot receive Ether by normal means as receive() is blocked and there are no payable functions.
+    -Any Ether maliciously sent would be locked, and no functions depend on Ether balances.
+
+Unprotected Swaps:
+    -None of the contracts handle token swaps, automated market making (AMM), or liquidity pools so there is no need
+    for slippage protection.
+
+Address Validation:
+    -Proposals can only target the Main.sol contract address, and proposals cannot add TIFDAO or WETH to the index.
+    -Proposed tokens must be contracts with a valid symbol() and Uniswap v3 liquidity pool.
+
+
+
+***Function Testing***
+-Tests found in tests/Governance.js and all 104 tests pass as expected
+
+-All of the values passed in the constructor are tested: 
+    it("Should succeed returning the name of the Governance.sol contract via name()", async function () {
+        expect(await deployment.deployerGovernance.name()).to.equal("Governance");
+    });
+
+    it("Should succeed returning the address of Token.sol through token()", async function () {
+        expect(await deployment.deployerGovernance.token()).to.equal(deployment.token.address);
+    });
+
+    it("Should succeed in returning the quorumNumerator()", async function () {
+        expect(await deployment.deployerGovernance["quorumNumerator()"]()).to.equal(4);
+    });
+
+    it("Should succeed in returning the lateQuorumVoteExtension()", async function () {
+        expect(await deployment.deployerGovernance.lateQuorumVoteExtension()).to.equal(14400);
+    });
+
+-This test shows that sending Ether through normal means to the contract is blocked:
+    it("Should fail in sending 1 ETH to the Governance.sol contract testing receive()", async function () {
+        await expect(deployment.userOne.sendTransaction({ 
+            to: deployment.governance.address, 
+            value: ethers.utils.parseEther("1") }
+        )).to.be.revertedWithCustomError(deployment.governance, "InvalidOperation");
+    });
+
+-This test shows calling relay() is blocked:
+    it("Should fail in calling relay()", async function () {
+        await expect(deployment.deployerGovernance.relay(deployment.main.address, 0, "0x")).to.be.revertedWithCustomError(
+            deployment.governance,
+            "InvalidOperation"
+        );
+    });
+
+-This test shows calling updateQuorumNumerator() is blocked:
+    it("Should fail in changing updateQuorumNumerator()", async function () {
+        await expect(deployment.deployerGovernance.updateQuorumNumerator(1)).to.be.revertedWithCustomError(
+            deployment.governance,
+            "InvalidOperation"
+        );
+    });
+
+-This test shows calling setLateQuorumVoteExtension() is blocked:
+    it("Should fail in changing setLateQuorumVoteExtension()", async function () {
+        await expect(deployment.deployerGovernance.setLateQuorumVoteExtension(1)).to.be.revertedWithCustomError(
+            deployment.governance,
+            "InvalidOperation"
+        );
+    });
+
+-This test shows how proposals can only have one operation per proposal:
+    it("Should fail in creating a proposal to addTokenToIndex() with the wrong proposal length", async function () {
+        const payload = ethers.utils.hexConcat([
+            addToken,
+            ethers.utils.defaultAbiCoder.encode(
+                ["address"], 
+                [WBTC_ADDRESS] 
+            )
+        ])
+        await expect(deployment.deployerGovernance.propose(
+            [deployment.main.address, deployment.main.address], 
+            [0, 0], 
+            [payload, payload], 
+            "Proposal 1")
+        ).to.be.revertedWithCustomError(deployment.governance, "InvalidProposalQuantity");
+    });
+
+-This test shows how proposals can only target the Main.sol contract address
+    it("Should fail in creating a proposal to addTokenToIndex() with the wrong target", async function () {
+        const payload = ethers.utils.hexConcat([
+            addToken,
+            ethers.utils.defaultAbiCoder.encode(
+                ["address"], 
+                [WBTC_ADDRESS] 
+            )
+        ])
+        await expect(deployment.deployerGovernance.propose(
+            [deployment.deployer.address], 
+            [0], 
+            [payload], 
+            "Proposal 1")
+        ).to.be.revertedWithCustomError(deployment.governance, "InvalidProposalTarget");
+    });
+   
+-This test shows that proposals can only have addTokenToIndex() or removeTokenFromIndex() as function selectors:
+    it("Should fail in creating a proposal with the wrong function selector", async function () {
+        const payload = ethers.utils.hexConcat([
+            ethers.utils.id("test(address,string)").slice(0, 10),
+            ethers.utils.defaultAbiCoder.encode(
+                ["address"], 
+                [WBTC_ADDRESS] 
+            )
+        ])
+        await expect(deployment.deployerGovernance.propose(
+            [deployment.main.address], 
+            [0], 
+            [payload], 
+            "Proposal 1")
+        ).to.be.revertedWithCustomError(deployment.governance, "InvalidFunctionSelector");
+    });
+
+-This test shows that proposals cannot add WETH or _tifAddress as tokens:
+    it("Should fail in creating a proposal with an invalid token", async function () {
+        const payload = ethers.utils.hexConcat([
+            addToken,
+            ethers.utils.defaultAbiCoder.encode(
+                ["address"], 
+                [WETH_ADDRESS] 
+            )
+        ])
+        await expect(deployment.deployerGovernance.propose(
+            [deployment.main.address], 
+            [0], 
+            [payload], 
+            "Proposal 1")
+        ).to.be.revertedWithCustomError(deployment.governance, "InvalidProposalToken");
+    });
+   
+-This test shows that proposals must propose a token that utilizes symbol():
+-The token symbol is used to get the prices from the coinmarketcap API, and if a project rebrands and uses a different
+symbol on coinmarketcap from what they use in their token contract then no price will be gotten. This is handled in
+Main.sol getMinValuedTokenInfo() where if there is no price for a token then it is not selected as the minValuedToken,
+and therefore it will never have value in the TIFDAO Fund. This is better than letting users enter any symbol they
+want, where they could get the price for a different token than the one they are proposing to add to the TIFDAO Index. 
+    it("Should fail in creating a proposal with an invalid token symbol", async function () {
+        const payload = ethers.utils.hexConcat([
+            addToken,
+            ethers.utils.defaultAbiCoder.encode(
+                ["address"], 
+                [deployment.governance.address] 
+            )
+        ])
+        await expect(deployment.deployerGovernance.propose(
+            [deployment.main.address], 
+            [0], 
+            [payload], 
+            "Proposal 1")
+        ).to.be.revertedWithCustomError(deployment.governance, "InvalidTokenSymbol");
+    });
+        
+-This test shows that proposals must propose a token with a valid Uniswap v3 0.3% fee liquidity pool quote:
+    it("Should fail in creating a proposal with a token with no Uniswap quote", async function () {
+        const payload = ethers.utils.hexConcat([
+            addToken,
+            ethers.utils.defaultAbiCoder.encode(
+                ["address"], 
+                [OM_ADDRESS] 
+            )
+        ])
+        await expect(deployment.deployerGovernance.propose(
+            [deployment.main.address], 
+            [0], 
+            [payload], 
+            "Proposal 1")
+        ).to.be.revertedWithCustomError(deployment.governance, "InvalidUniswapQuote");
+    });
+
+-These two tests show that the functions votingDelay() and votingPeriod() correctly set the values:
+    it("Should succeed in returning the votingDelay()", async function () {
+        expect(await deployment.deployerGovernance.votingDelay()).to.equal(21600);
+    });
+
+    it("Should succeed in returning the votingPeriod()", async function () {
+        expect(await deployment.deployerGovernance.votingPeriod()).to.equal(50400);
+    });
+
+
+
+***Solhint***
+Summary: The OpenZeppelin Wizard (v4 and v5) both still use this method of import and I want to maintain consistency
+across my code. I cannot remove no-empty-blocks as I separated the function to not exceed the max line length, but it's
+not an issue within itself as I only wish to see if the call reverts. 
+
+Default: max-line-length in the constructor is the only issue detected, which was silenced as the current state is
+reable and it only exceeds the max length by one character
+
+Recommended:
+contracts/Governance.sol
+   11:1   warning  global import of path @openzeppelin/contracts/governance/Governor.sol is not allowed. Specify names to import individually or bind all exports of the module into a name (import "path" as Name)                                no-global-import
+   12:1   warning  global import of path @openzeppelin/contracts/governance/extensions/GovernorCountingSimple.sol is not allowed. Specify names to import individually or bind all exports of the module into a name (import "path" as Name)       no-global-import
+   13:1   warning  global import of path @openzeppelin/contracts/governance/extensions/GovernorVotes.sol is not allowed. Specify names to import individually or bind all exports of the module into a name (import "path" as Name)                no-global-import
+   14:1   warning  global import of path @openzeppelin/contracts/governance/extensions/GovernorVotesQuorumFraction.sol is not allowed. Specify names to import individually or bind all exports of the module into a name (import "path" as Name)  no-global-import
+   15:1   warning  global import of path @openzeppelin/contracts/governance/extensions/GovernorPreventLateQuorum.sol is not allowed. Specify names to import individually or bind all exports of the module into a name (import "path" as Name)    no-global-import
+   16:1   warning  global import of path @openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol is not allowed. Specify names to import individually or bind all exports of the module into a name (import "path" as Name)              no-global-import
+   17:1   warning  global import of path @uniswap/v3-periphery/contracts/interfaces/IQuoter.sol is not allowed. Specify names to import individually or bind all exports of the module into a name (import "path" as Name)                         no-global-import
+  141:33  warning  Code contains empty blocks                                                                                                                                                                                                      no-empty-blocks
+
+✖ 8 problems (0 errors, 8 warnings)
+
+
+
+***Mythril Analysis***
+The analysis was completed successfully. No issues were detected.
